@@ -61,7 +61,9 @@ class OpenInEditorBridgeTest < Minitest::Test
     response = request("/health")
 
     assert_equal "200", response.code
-    assert_equal({ "ok" => true }, JSON.parse(response.body))
+    payload = JSON.parse(response.body)
+    assert_equal true, payload.fetch("ok")
+    assert_equal Integer(File.read(pid_file)), payload.fetch("pid")
   end
 
   def test_open_in_editor_translates_path_and_location
@@ -103,6 +105,43 @@ class OpenInEditorBridgeTest < Minitest::Test
     listener&.close
   end
 
+  def test_shutdown_removes_stale_pid_without_killing_unrelated_process
+    unrelated_pid = Process.spawn(RbConfig.ruby, "-e", "sleep 10", pgroup: true)
+    FileUtils.mkdir_p(File.dirname(pid_file))
+    File.write(pid_file, "#{unrelated_pid}\n")
+
+    bridge.call("--shutdown")
+
+    assert_process_running(unrelated_pid)
+    refute File.exist?(pid_file)
+  ensure
+    if unrelated_pid
+      Process.kill("TERM", -unrelated_pid) rescue Errno::ESRCH
+      Process.wait(unrelated_pid) rescue Errno::ECHILD
+    end
+  end
+
+  def test_shutdown_does_not_kill_stale_pid_when_another_bridge_answers
+    bridge.call("--ensure-running")
+    bridge_pid = Integer(File.read(pid_file))
+    unrelated_pid = Process.spawn(RbConfig.ruby, "-e", "sleep 10", pgroup: true)
+    File.write(pid_file, "#{unrelated_pid}\n")
+
+    bridge.call("--shutdown")
+
+    assert_process_running(unrelated_pid)
+    assert_equal "200", request("/health").code
+  ensure
+    if bridge_pid
+      File.write(pid_file, "#{bridge_pid}\n")
+      bridge.call("--shutdown")
+    end
+    if unrelated_pid
+      Process.kill("TERM", -unrelated_pid) rescue Errno::ESRCH
+      Process.wait(unrelated_pid) rescue Errno::ECHILD
+    end
+  end
+
   private
 
   def bridge
@@ -125,6 +164,12 @@ class OpenInEditorBridgeTest < Minitest::Test
     true
   rescue Errno::ESRCH, Errno::ENOENT
     false
+  end
+
+  def assert_process_running(pid)
+    Process.kill(0, pid)
+  rescue Errno::ESRCH, Errno::EPERM
+    flunk "expected process #{pid} to remain running"
   end
 
   def port_open?

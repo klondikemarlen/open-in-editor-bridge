@@ -98,7 +98,7 @@ class OpenInEditorBridge
   end
 
   def shutdown
-    pid = running_pid
+    pid = running_pid(validate_health: true)
     return unless pid
 
     Process.kill("TERM", -pid)
@@ -253,7 +253,7 @@ class OpenInEditorBridge
   def respond_to_get_request(socket, path, params)
     case path
     when HEALTH_PATH
-      write_json_response(socket, payload: { ok: true })
+      write_json_response(socket, payload: { ok: true, pid: Process.pid })
     when OPEN_IN_EDITOR_PATH
       open_in_editor(socket, params)
     else
@@ -281,7 +281,7 @@ class OpenInEditorBridge
     return nil unless File.exist?(config[:pid_file])
 
     pid = Integer(File.read(config[:pid_file]).strip)
-    return pid if process_running?(pid) && (!validate_health || bridge_healthy?)
+    return pid if process_running?(pid) && (!validate_health || bridge_healthy?(expected_pid: pid))
 
     delete_pid_file
     nil
@@ -301,7 +301,7 @@ class OpenInEditorBridge
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + config[:startup_timeout]
     loop do
       raise StartupError, "Editor bridge failed to start. See #{config[:log_file]}." unless process_running?(pid)
-      return if bridge_healthy?
+      return if bridge_healthy?(expected_pid: pid)
 
       raise StartupError, "Editor bridge did not become ready." if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
       sleep 0.05
@@ -317,16 +317,18 @@ class OpenInEditorBridge
     end
   end
 
-  def bridge_healthy?
+  def bridge_healthy?(expected_pid: nil)
     socket = TCPSocket.new("127.0.0.1", config[:port])
     response = Timeout.timeout(0.25) do
       socket.write("GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
       socket.read
     end
     headers, body = response.split("\r\n\r\n", 2)
+    payload = JSON.parse(body.to_s)
     headers&.start_with?("HTTP/1.1 200 ") &&
       headers.lines.any? { |line| line.casecmp("X-Open-In-Editor-Bridge: 1\r\n").zero? } &&
-      JSON.parse(body.to_s).fetch("ok") == true
+      payload.fetch("ok") == true &&
+      (expected_pid.nil? || payload.fetch("pid") == expected_pid)
   rescue Errno::ECONNREFUSED, JSON::ParserError, KeyError, Timeout::Error
     false
   ensure
