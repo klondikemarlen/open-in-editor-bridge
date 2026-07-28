@@ -1,0 +1,5 @@
+#!/usr/bin/env ruby
+
+require_relative "../lib/open_in_editor_bridge"
+
+OpenInEditorBridge.call(*ARGV)
