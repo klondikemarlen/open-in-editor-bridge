@@ -103,6 +103,22 @@ class OpenInEditorBridgeTest < Minitest::Test
     listener&.close
   end
 
+  def test_shutdown_removes_stale_pid_without_killing_unrelated_process
+    unrelated_pid = Process.spawn(RbConfig.ruby, "-e", "sleep 10", pgroup: true)
+    FileUtils.mkdir_p(File.dirname(pid_file))
+    File.write(pid_file, "#{unrelated_pid}\n")
+
+    bridge.call("--shutdown")
+
+    assert_process_running(unrelated_pid)
+    refute File.exist?(pid_file)
+  ensure
+    if unrelated_pid
+      Process.kill("TERM", -unrelated_pid) rescue Errno::ESRCH
+      Process.wait(unrelated_pid) rescue Errno::ECHILD
+    end
+  end
+
   private
 
   def bridge
@@ -125,6 +141,12 @@ class OpenInEditorBridgeTest < Minitest::Test
     true
   rescue Errno::ESRCH, Errno::ENOENT
     false
+  end
+
+  def assert_process_running(pid)
+    Process.kill(0, pid)
+  rescue Errno::ESRCH, Errno::EPERM
+    flunk "expected process #{pid} to remain running"
   end
 
   def port_open?

@@ -98,7 +98,7 @@ class OpenInEditorBridge
   end
 
   def shutdown
-    pid = running_pid
+    pid = running_pid(validate_health: true)
     return unless pid
 
     Process.kill("TERM", -pid)
