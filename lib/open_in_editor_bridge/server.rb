@@ -62,9 +62,13 @@ class OpenInEditorBridge
         case path
         when "/health"
           if method == "GET"
+            nonce = headers["x-open-in-editor-nonce"]
+            if nonce && !Authentication.valid_nonce?(nonce)
+              return respond(socket, 400, { "error" => "Invalid health nonce" })
+            end
             respond(socket, 200, { "ok" => true, "pid" => Process.pid, "protocol" => Configuration::PROTOCOL,
               "bind_address" => @configuration.bind_address, "sessions" => @sessions.keys },
-              nonce: headers["x-open-in-editor-nonce"], path: path)
+              nonce: nonce, path: path)
           else
             respond(socket, 405, { "error" => "Method not allowed" })
           end
@@ -113,10 +117,12 @@ class OpenInEditorBridge
     def control_request(socket, method, path, headers, body)
       return respond(socket, 405, { "error" => "Method not allowed" }) unless method == "POST"
       nonce = headers["x-open-in-editor-nonce"]
-      valid_nonce = nonce.is_a?(String) && nonce.match?(/\A[0-9a-f]{32}\z/) && !@used_nonces.key?(nonce)
+      valid_nonce = Authentication.valid_nonce?(nonce) && !@used_nonces.key?(nonce)
+      return respond(socket, 403, { "error" => "Forbidden" }) unless valid_nonce
+
       valid_signature = Authentication.valid?(headers["x-open-in-editor-signature"], @token,
         "request", nonce, method, path, body)
-      return respond(socket, 403, { "error" => "Forbidden" }) unless valid_nonce && valid_signature
+      return respond(socket, 403, { "error" => "Forbidden" }) unless valid_signature
 
       @used_nonces[nonce] = true
       payload = JSON.parse(body)

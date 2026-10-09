@@ -1,13 +1,20 @@
 # frozen_string_literal: true
 
-require "json"
 require "openssl"
 
 class OpenInEditorBridge
   module Authentication
     def self.signature(token, direction, nonce, method_or_status, path, body)
-      message = JSON.generate([direction, nonce, method_or_status.to_s, path, body])
-      OpenSSL::HMAC.hexdigest("SHA256", token, message)
+      digest = OpenSSL::HMAC.new(token, "SHA256")
+      [direction, nonce, method_or_status, path, body].each do |part|
+        bytes = part.to_s
+        digest << [bytes.bytesize].pack("Q>") << bytes
+      end
+      digest.hexdigest
+    end
+
+    def self.valid_nonce?(nonce)
+      nonce.is_a?(String) && nonce.ascii_only? && nonce.match?(/\A[0-9a-f]{32}\z/)
     end
 
     def self.valid?(provided, token, *message)

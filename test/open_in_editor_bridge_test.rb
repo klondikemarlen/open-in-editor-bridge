@@ -305,6 +305,34 @@ class OpenInEditorBridgeTest < Minitest::Test
     assert_equal [bridge.session_id, second.session_id].sort, health.fetch("sessions").sort
   end
 
+  def test_invalid_utf8_health_nonce_does_not_stop_registered_checkouts
+    bridge.call("--ensure-running")
+    second = second_checkout
+    second.call("--ensure-running")
+    original_state = state
+
+    response = raw_request("GET /health HTTP/1.1\r\nX-Open-In-Editor-Nonce: \xff\r\n\r\n".b)
+
+    assert response.start_with?("HTTP/1.1 400 ")
+    assert_equal original_state, state
+    assert_equal [bridge.session_id, second.session_id].sort, health.fetch("sessions").sort
+  end
+
+  def test_invalid_utf8_control_body_does_not_stop_registered_checkouts
+    bridge.call("--ensure-running")
+    second = second_checkout
+    second.call("--ensure-running")
+    original_state = state
+    message = "POST /sessions HTTP/1.1\r\nContent-Length: 1\r\n" \
+      "X-Open-In-Editor-Nonce: #{'0' * 32}\r\nX-Open-In-Editor-Signature: #{'0' * 64}\r\n\r\n\xff"
+
+    response = raw_request(message.b)
+
+    assert response.start_with?("HTTP/1.1 403 ")
+    assert_equal original_state, state
+    assert_equal [bridge.session_id, second.session_id].sort, health.fetch("sessions").sort
+  end
+
   private
 
   def bridge
@@ -366,6 +394,14 @@ class OpenInEditorBridgeTest < Minitest::Test
   def request(path, request_class = Net::HTTP::Get)
     uri = URI("http://127.0.0.1:#{@port}#{path}")
     Net::HTTP.start(uri.hostname, uri.port, nil) { |http| http.request(request_class.new(uri)) }
+  end
+
+  def raw_request(message)
+    socket = TCPSocket.new("127.0.0.1", @port)
+    socket.write(message)
+    socket.read
+  ensure
+    socket&.close
   end
 
   def editor_request(file, session_id = nil)
