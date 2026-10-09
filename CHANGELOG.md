@@ -23,3 +23,4 @@
 - Path-prefix collisions and double decoding of percent-encoded filenames.
 - Relative editor commands now execute in the requesting checkout, not the checkout that first started the broker.
 - Failed health probes preserve live shared-broker credentials instead of orphaning active sessions.
+- Malformed authentication bytes are rejected without terminating other checkout sessions.
