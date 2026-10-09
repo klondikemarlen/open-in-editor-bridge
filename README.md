@@ -122,6 +122,10 @@ Version 0.2 replaces checkout-local PID/log files with shared runtime state. Sto
 
 ## Development and Release
 
+Commit the root `Gemfile.lock` to keep development and release-test dependencies reproducible. Regenerate it with Bundler after changing `Gemfile`, and commit both files together when both change. This development lockfile is not included in the gem package and does not constrain applications installing this gem; those applications resolve the gemspec's dependencies using their own lockfiles.
+
+Keep generated `*.gem` packages, `.ruby-lsp/` editor state, and local `pkg/` / `tmp/` artifacts out of version control.
+
 ```sh
 bundle install
 bundle exec rake test
