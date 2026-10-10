@@ -1,12 +1,11 @@
 # frozen_string_literal: true
 
+require "open3"
 require "tempfile"
 
 class OpenInEditorBridge
   class Docker
     CONTAINER_DIRECTORY = "/open-in-editor-bridge"
-    COMPOSE_FILES = %w[compose.yaml compose.yml docker-compose.yaml docker-compose.yml].freeze
-    OVERRIDE_FILES = %w[compose.override.yaml compose.override.yml docker-compose.override.yaml docker-compose.override.yml].freeze
 
     def initialize(env:, project_root:, service:, compose_options:)
       @env = env.to_h
@@ -39,11 +38,14 @@ class OpenInEditorBridge
       end
       raise ArgumentError, "Select a Compose service for the Vite integration" if @service.to_s.empty?
 
-      # Resolve Compose inputs before acquiring a lease; invalid setup must not leave a broker behind.
-      files = compose_file_options
-      with_override do |override|
-        options = [*files, "-f", override]
-        detached?(args) ? detached_up(args, options) : foreground_up(args, options)
+      # Resolve source files once with Compose, before acquiring a lease. Reuse
+      # its canonical model rather than trying to reproduce file discovery.
+      with_resolved_configuration do |resolved_file, profiles|
+        with_override do |override|
+          options = compose_options_for_resolved_configuration(profiles) +
+            ["-f", resolved_file, "-f", override]
+          detached?(args) ? detached_up(args, options) : foreground_up(args, options)
+        end
       end
     end
 
@@ -73,13 +75,61 @@ class OpenInEditorBridge
     end
 
     def detached?(args)
+      wait_flag = args.reverse_each.find { |arg| %w[--wait --wait=true --wait=false].include?(arg) }
+      return true if wait_flag && wait_flag != "--wait=false"
+
       flags = args.select { |arg| %w[-d --detach --detach=true --detach=false -d=true -d=false].include?(arg) }
       !flags.empty? && !%w[--detach=false -d=false].include?(flags.last)
     end
 
-    def run(args, extra_options = [])
-      system(@env, "docker", "compose", *@compose_options, *extra_options, *args,
+    def run(args, compose_options = @compose_options)
+      system(@env, "docker", "compose", *compose_options, *args,
         chdir: @project_root, exception: true)
+    end
+
+    def with_resolved_configuration
+      Tempfile.create(["compose-resolved-", ".json"]) do |file|
+        system(@env, "docker", "compose", *@compose_options, "config", "--format", "json",
+          chdir: @project_root, out: file, exception: true)
+        file.flush
+        yield file.path, active_profiles
+      end
+    end
+
+    def active_profiles
+      output, error, status = Open3.capture3(@env, "docker", "compose", *@compose_options,
+        "config", "--environment", chdir: @project_root)
+      unless status.success?
+        raise "Docker Compose config --environment failed (exit #{status.exitstatus}): #{error.strip}"
+      end
+
+      profiles = output.lines.find { |line| line.start_with?("COMPOSE_PROFILES=") }
+      return [] unless profiles
+
+      profiles.delete_prefix("COMPOSE_PROFILES=").strip.split(",").reject(&:empty?)
+    end
+
+    def compose_options_for_resolved_configuration(profiles)
+      options = []
+      skip_next = false
+      @compose_options.each do |option|
+        if skip_next
+          skip_next = false
+          next
+        end
+        if %w[-f --file --env-file].include?(option)
+          skip_next = true
+        elsif option.start_with?("--file=", "--env-file=") || option.match?(/\A-f.+/)
+          next
+        else
+          options << option
+        end
+      end
+      unless options.any? { |option| option == "--project-directory" || option.start_with?("--project-directory=") }
+        options.concat(["--project-directory", @project_root])
+      end
+      profiles.each { |profile| options.concat(["--profile", profile]) }
+      options
     end
 
     def with_override
@@ -117,35 +167,6 @@ class OpenInEditorBridge
         File.rename(file.path, path)
       end
       path
-    end
-
-    def compose_file_options
-      return [] if @compose_options.any? { |arg| arg == "-f" || arg == "--file" || arg.start_with?("--file=") || arg.match?(/\A-f.+/) }
-
-      if @env["COMPOSE_FILE"] && !@env["COMPOSE_FILE"].empty?
-        separator = @env.fetch("COMPOSE_PATH_SEPARATOR", File::PATH_SEPARATOR)
-        return @env.fetch("COMPOSE_FILE").split(separator).flat_map { |path| ["-f", File.expand_path(path, @project_root)] }
-      end
-
-      directory = discovery_directory
-      loop do
-        base = COMPOSE_FILES.find { |name| File.file?(File.join(directory, name)) }
-        if base
-          override = OVERRIDE_FILES.find { |name| File.file?(File.join(directory, name)) }
-          return [base, override].compact.flat_map { |name| ["-f", File.join(directory, name)] }
-        end
-        parent = File.dirname(directory)
-        raise ArgumentError, "No Compose file found; select it with compose_options: [\"-f\", path]" if parent == directory
-        directory = parent
-      end
-    end
-
-    def discovery_directory
-      @compose_options.each_with_index do |option, index|
-        return File.expand_path(@compose_options.fetch(index + 1), @project_root) if option == "--project-directory"
-        return File.expand_path(option.delete_prefix("--project-directory="), @project_root) if option.start_with?("--project-directory=")
-      end
-      @project_root
     end
   end
 end

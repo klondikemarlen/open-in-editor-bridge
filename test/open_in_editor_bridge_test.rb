@@ -390,6 +390,25 @@ class OpenInEditorBridgeTest < Minitest::Test
     refute port_open?
   end
 
+  def test_compose_wait_returns_with_a_detached_registration
+    compose_fixture(exit_status: 0)
+    OpenInEditorBridge.compose("up", "--wait=true", env: docker_env)
+    client = build_bridge(docker_env)
+
+    assert_equal [client.session_id], health.fetch("sessions")
+    OpenInEditorBridge.compose("down", env: docker_env)
+    refute port_open?
+  end
+
+  def test_invalid_compose_configuration_fails_before_registering
+    compose_fixture(exit_status: 0, config_exit_status: 17)
+
+    assert_raises(RuntimeError) { OpenInEditorBridge.compose("up", env: docker_env) }
+
+    refute File.exist?(@runtime_directory)
+    refute port_open?
+  end
+
   def test_compose_requires_docker_network_opt_in_before_registering
     compose_fixture(exit_status: 0)
     env = docker_env.merge("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "127.0.0.1")
@@ -407,11 +426,30 @@ class OpenInEditorBridgeTest < Minitest::Test
       "OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "0.0.0.0")
   end
 
-  def compose_fixture(exit_status:)
+  def compose_fixture(exit_status:, config_exit_status: 0)
     FileUtils.mkdir_p(File.join(@directory, "bin"))
     File.write(File.join(@project_root, "compose.yaml"), "services:\n  web:\n    image: unused\n")
     command = File.join(@directory, "bin/docker")
-    File.write(command, "#!/bin/sh\nexit #{exit_status}\n")
+    script = <<~SH
+      #!/bin/sh
+      configuration=0
+      format=0
+      for argument do
+        case "$argument" in
+          config) configuration=1 ;;
+          --format) format=1 ;;
+        esac
+      done
+      if [ "$configuration" = "1" ]; then
+        if [ "#{config_exit_status}" -ne 0 ]; then exit #{config_exit_status}; fi
+        if [ "$format" = "1" ]; then
+          printf '%s\\n' '{"services":{"web":{"image":"unused"}}}'
+        fi
+        exit 0
+      fi
+      exit #{exit_status}
+    SH
+    File.write(command, script)
     File.chmod(0o755, command)
   end
 
