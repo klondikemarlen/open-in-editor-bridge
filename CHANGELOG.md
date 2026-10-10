@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-10-10
+
+### Added
+
+- Retained opt-in `rake test:docker` gate for real multi-checkout routing, editor invocation, configuration parity, and cleanup, including consumer Vite 5.4.20 / 8.0.9 and the prior 6.0.0 reference.
+- The same runtime gate can exercise a clean installed gem via `OPEN_IN_EDITOR_BRIDGE_TEST_LIB`.
+- Explicit public/internal API boundaries and evidence-based versioning/1.0 promotion policy.
+
+### Fixed
+
+- `up --wait` / `--wait=true` now retain detached editor registration after services become ready, rather than stopping the broker while containers remain running.
+- Compose's native canonical configuration replaces handwritten file discovery, honoring `.env` / `--env-file` / `COMPOSE_FILE` and preserving project identity, paths, profiles, interpolation, and literal dollar values.
+- Invalid Compose configuration fails before acquiring a broker lease.
+
+### Compatibility
+
+- Docker startup requires Compose's `config --format json` and `config --environment` capabilities. Broker protocol, explicit network exposure, host-only control credentials, and existing Ruby lifecycle APIs are unchanged.
+- This is a development minor release, not an API freeze. Prefer `~> 0.4.0` for the tested release line.
+
 ## 0.3.0 — 2026-10-09
 
 ### Added
