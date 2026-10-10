@@ -333,7 +333,87 @@ class OpenInEditorBridgeTest < Minitest::Test
     assert_equal [bridge.session_id, second.session_id].sort, health.fetch("sessions").sort
   end
 
+  def test_compose_foreground_releases_its_lease_after_success_and_failure
+    compose_fixture(exit_status: 0)
+    assert OpenInEditorBridge.compose("up", env: docker_env)
+    refute port_open?
+
+    compose_fixture(exit_status: 17)
+    assert_raises(RuntimeError) { OpenInEditorBridge.compose("up", env: docker_env) }
+    refute port_open?
+  end
+
+  def test_compose_detached_registration_is_idempotent_and_down_releases_it
+    compose_fixture(exit_status: 0)
+    OpenInEditorBridge.compose("up", "-d", env: docker_env)
+    client = build_bridge(docker_env)
+    pid = health.fetch("pid")
+    OpenInEditorBridge.compose("up", "--detach", env: docker_env)
+
+    assert_equal pid, health.fetch("pid")
+    assert_equal [client.session_id], health.fetch("sessions")
+    OpenInEditorBridge.compose("down", env: docker_env)
+    refute port_open?
+  end
+
+  def test_failed_detached_compose_start_releases_only_new_registration
+    compose_fixture(exit_status: 17)
+    assert_raises(RuntimeError) { OpenInEditorBridge.compose("up", "-d", env: docker_env) }
+    refute port_open?
+
+    client = build_bridge(docker_env)
+    client.call("--ensure-running")
+    pid = health.fetch("pid")
+    assert_raises(RuntimeError) { OpenInEditorBridge.compose("up", "-d", env: docker_env) }
+
+    assert_equal pid, health.fetch("pid")
+    assert_equal [client.session_id], health.fetch("sessions")
+  end
+
+  def test_failed_compose_down_keeps_the_application_registration
+    compose_fixture(exit_status: 0)
+    OpenInEditorBridge.compose("up", "-d", env: docker_env)
+    client = build_bridge(docker_env)
+    compose_fixture(exit_status: 17)
+
+    assert_raises(RuntimeError) { OpenInEditorBridge.compose("down", env: docker_env) }
+
+    assert_equal [client.session_id], health.fetch("sessions")
+  end
+
+  def test_unrelated_compose_commands_do_not_require_valid_editor_configuration
+    compose_fixture(exit_status: 0)
+    env = docker_env.merge("OPEN_IN_EDITOR_COMMAND" => "", "OPEN_IN_EDITOR_BRIDGE_PORT" => "not-a-port")
+
+    assert OpenInEditorBridge.compose("config", env: env)
+    refute File.exist?(@runtime_directory)
+    refute port_open?
+  end
+
+  def test_compose_requires_docker_network_opt_in_before_registering
+    compose_fixture(exit_status: 0)
+    env = docker_env.merge("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "127.0.0.1")
+
+    assert_raises(ArgumentError) { OpenInEditorBridge.compose("up", "-d", env: env) }
+
+    refute File.exist?(@runtime_directory)
+    refute port_open?
+  end
+
   private
+
+  def docker_env
+    @env.merge("PATH" => "#{File.join(@directory, "bin")}:#{ENV.fetch("PATH")}",
+      "OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "0.0.0.0")
+  end
+
+  def compose_fixture(exit_status:)
+    FileUtils.mkdir_p(File.join(@directory, "bin"))
+    File.write(File.join(@project_root, "compose.yaml"), "services:\n  web:\n    image: unused\n")
+    command = File.join(@directory, "bin/docker")
+    File.write(command, "#!/bin/sh\nexit #{exit_status}\n")
+    File.chmod(0o755, command)
+  end
 
   def bridge
     @bridge ||= build_bridge(@env)

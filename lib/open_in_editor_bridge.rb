@@ -14,6 +14,10 @@ class OpenInEditorBridge
     new.session_id
   end
 
+  def self.compose(*args, service: "web", compose_options: [], env: ENV, project_root: nil)
+    Docker.new(env: env, project_root: project_root, service: service, compose_options: compose_options).call(*args)
+  end
+
   def self.with_running(ensure_running: true)
     bridge = new
     lease = SecureRandom.hex(16) if ensure_running
@@ -69,5 +73,6 @@ require_relative "open_in_editor_bridge/configuration"
 require_relative "open_in_editor_bridge/authentication"
 require_relative "open_in_editor_bridge/server"
 require_relative "open_in_editor_bridge/client"
+require_relative "open_in_editor_bridge/docker"
 
 OpenInEditorBridge.call(*ARGV) if $PROGRAM_NAME == __FILE__
