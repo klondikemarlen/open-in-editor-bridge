@@ -13,7 +13,7 @@ Gem::Specification.new do |spec|
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
 
-  spec.files = Dir["CHANGELOG.md", "LICENSE.txt", "README.md", "exe/open-in-editor-bridge", "lib/**/*.rb"]
+  spec.files = Dir["CHANGELOG.md", "LICENSE.txt", "README.md", "exe/open-in-editor-bridge", "lib/**/*.rb", "lib/**/*.mjs"]
   spec.bindir = "exe"
   spec.executables = ["open-in-editor-bridge"]
   spec.require_paths = ["lib"]

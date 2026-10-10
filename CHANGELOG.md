@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 — 2026-10-09
+
+### Added
+
+- `OpenInEditorBridge.compose` for library-owned Docker/Vite integration: generated service overrides mount a bundled Vite plugin and checkout identity, without session environment/query plumbing in applications.
+- Development-only Vite plugin that routes editor requests to the mounted checkout, replacing duplicate caller selectors while preserving encoded file paths and line/column.
+- Minimal adoption instructions and an ELCC migration path for removing its bespoke session transport.
+
+### Security and Lifecycle
+
+- Docker startup still requires explicit network-exposure opt-in. Only non-secret identity/target data and plugin code are mounted read-only; lifecycle credentials stay on the host.
+- Missing/malformed Vite identity fails startup safely; only the editor endpoint is proxied.
+- Foreground cleanup and idempotent detached registration reuse the existing lease protocol. Failed startup releases only a new registration, and failed shutdown retains the active registration.
+- Unrelated Compose commands and production Vite builds do not require editor setup.
+
 ## 0.2.0 — 2026-10-09
 
 ### Added
