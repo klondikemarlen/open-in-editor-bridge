@@ -5,95 +5,104 @@ A Ruby gem that runs a shared local HTTP bridge for opening container files in t
 ## Install
 
 ```ruby
-gem "open-in-editor-bridge", "~> 0.2"
+gem "open-in-editor-bridge", "~> 0.3"
 ```
 
 ```sh
 gem install open-in-editor-bridge
 ```
 
-## Foreground Ruby API
+## Docker and Vite Integration
 
-Wrap commands whose lifetime matches the application, such as foreground Compose:
+Use the host-side Compose adapter and the gem's mounted Vite plugin. The library owns checkout identity transport, the host-gateway entry, and the editor proxy; **do not export a session variable or write a request rewrite**.
+
+Replace the development Compose startup/shutdown call:
+
+```ruby
+require "open_in_editor_bridge"
+
+# Explicit network-exposure opt-in; use only on a trusted development network.
+ENV["OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS"] = "0.0.0.0"
+ENV["OPEN_IN_EDITOR_COMMAND"] = "code"
+
+OpenInEditorBridge.compose("up", service: "web")
+# Detached startup: OpenInEditorBridge.compose("up", "-d", service: "web")
+# Shutdown: OpenInEditorBridge.compose("down", service: "web")
+```
+
+Add the plugin to your existing Vite configuration for Docker development:
+
+```js
+import { defineConfig } from "vite";
+
+export default defineConfig(async ({ command, mode }) => {
+  const plugins = [];
+  if (command === "serve" && mode === "development") {
+    const integrationPath = "/open-in-editor-bridge/vite.mjs";
+    const { default: openInEditorBridge } = await import(integrationPath);
+    plugins.push(openInEditorBridge());
+  }
+
+  return { plugins, server: { host: "0.0.0.0" } };
+});
+```
+
+Keep your application's existing plugins and other Vite settings. The variable-based dynamic import is intentional: production builds and test-mode configuration can load without Docker's development mounts. This path supports Docker-hosted Vite development; native-host Vite and custom development modes need their own explicit opt-in condition. The plugin requires a valid mounted manifest when enabled and fails startup if it is missing or malformed. Vite 6 is exercised by release QA.
+
+### Application Configuration That Remains
+
+- Select the Vite service (`service: "web"` by default); retain its image, command, source mounts, ports, and normal environment.
+- Select Compose files/project options when necessary, for example `compose_options: ["-f", "docker-compose.development.yaml", "-p", "my-checkout"]`. Pass subcommand options after `"up"` / `"down"`, not in `compose_options`.
+- Select checkout/container/host roots and the editor through the existing bridge configuration below. `project_root:` defaults to the current checkout; `env:` supplies bridge configuration and child-process environment overrides.
+- Explicitly select a Docker-reachable bind address. The adapter rejects loopback startup and never changes the default binding itself.
+
+When no explicit `-f` is supplied, the adapter respects `COMPOSE_FILE` / `COMPOSE_PATH_SEPARATOR`, or discovers a standard Compose file and its default override from the project directory upward. `--project-directory` is supported. Compose runs in `project_root:` and inherits normal process input/output. Failures raise; successful commands return `true`.
+
+Only `up` adds editor setup. Foreground `up` owns an independent lease and releases it even on failure. `up -d` / `up --detach` use the existing idempotent detached registration. Failed detached startup releases a newly acquired registration but preserves one that was already active. Successful `down` releases that checkout's detached registration; failed `down` keeps it. Other commands (`config`, `build`, `exec`, `run`, `logs`, and so on) execute ordinary Compose without editor setup or requiring an editor. `stop` does not release detached registration; use `down` or `--shutdown` when done. If a new container needs the editor mounts, create it through `up`.
+
+The generated override mounts just two read-only files at `/open-in-editor-bridge`: the packaged `vite.mjs` and a checkout-specific `session.json` containing identity and target URL. It never mounts broker state, the whole private runtime directory, or lifecycle control credentials. Temporary Compose overrides are removed after each invocation; non-secret manifests remain in the private host runtime directory for existing detached containers.
+
+All checkouts share the standard host port `3333`, bind address, and private runtime directory. Each may use the same container directory `/usr/src/web`: the plugin selects its own host checkout from its mounted identity. It replaces all caller-supplied `session` selectors, including duplicates and encoded selector names, without rewriting other query bytes. Only `/__open-in-editor` is proxied; health and lifecycle endpoints are not. Existing exact editor proxy entries are replaced, and editor routing takes precedence over broader application proxy entries.
+
+### Adopting in ELCC
+
+After installing 0.3.0, ELCC can replace the editor lifecycle/Compose `up` and `down` path in `bin/dev` with `OpenInEditorBridge.compose`, passing its existing development/gateway `-f` options, project name, host user/group variables, and gateway hostname. Keep gateway lifecycle ownership and pipe-input handling for unrelated commands unchanged.
+
+Remove the `OPEN_IN_EDITOR_SESSION_ID` export from `dynamic_environment_variables`, its web-service pass-through in `docker-compose.development.yaml`, and the handwritten `/__open-in-editor` target/rewrite in `web/vite.config.js`. Add the mounted plugin to the existing Vue/Vuetify/gateway plugin list under the development-only condition above. The adapter supplies the host-gateway entry, so an editor-only `extra_hosts` entry is no longer necessary. Keep the explicit trusted-network bind opt-in and existing root/editor settings. No consumer files are changed automatically.
+
+## Low-Level Ruby API
+
+For non-Compose applications or custom integrations:
 
 ```ruby
 require "open_in_editor_bridge"
 
 OpenInEditorBridge.with_running do |session_id|
-  ENV["OPEN_IN_EDITOR_SESSION_ID"] = session_id
-  system("docker", "compose", "up", exception: true)
+  # A custom integration may use session_id to select this checkout.
+  system("./bin/app", exception: true)
 end
 ```
 
 The block returns its normal result. Its checkout lease is released in `ensure`, including when the block raises; cleanup does not replace the original exception. Overlapping wrappers have independent leases, even in the same checkout. Finishing one wrapper never releases another wrapper or an existing detached registration.
 
-`OpenInEditorBridge.session_id` returns the stable ID for the configured checkout without starting the bridge. `OpenInEditorBridge.new(env: ..., project_root: ...)` supports explicit configuration for library consumers.
+`OpenInEditorBridge.session_id` returns the stable ID without starting the bridge. `OpenInEditorBridge.new(env: ..., project_root: ...)` supports explicit configuration. `call("--ensure-running")` registers a detached checkout; `call("--shutdown")` releases it. Repeated registration is idempotent. `with_running(ensure_running: false)` runs its block without acquiring a lease and releases detached registration afterward. Do not wrap detached startup in a foreground lease.
 
-## Detached Compose
+## CLI and Session Protocol
 
-`up -d` returns before the application stops. Use persistent registration, **not** `with_running` around detached startup:
-
-```ruby
-require "open_in_editor_bridge"
-
-OpenInEditorBridge.call("--ensure-running")
-ENV["OPEN_IN_EDITOR_SESSION_ID"] = OpenInEditorBridge.session_id
-system("docker", "compose", "up", "-d", exception: true)
-```
-
-Release that checkout's persistent registration when taking it down:
-
-```ruby
-OpenInEditorBridge.with_running(ensure_running: false) do
-  system("docker", "compose", "down", exception: true)
-end
-```
-
-`ensure_running: false` does not register a new lease and releases only the detached registration after the block. You can alternatively call `OpenInEditorBridge.call("--shutdown")` directly. Repeated `--ensure-running` calls are idempotent for a checkout; one `--shutdown` releases its detached registration. Foreground leases and registrations for other checkouts remain active. The listener exits when the last lease is released.
-
-## CLI
-
-Run lifecycle commands from the host checkout (or set `OPEN_IN_EDITOR_PROJECT_ROOT` explicitly):
+Run lifecycle commands from the host checkout (or set `OPEN_IN_EDITOR_PROJECT_ROOT`):
 
 ```sh
-export OPEN_IN_EDITOR_COMMAND='code'
-# Explicit opt-in for Docker bridge-network access; read the security section.
-export OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS=0.0.0.0
-export OPEN_IN_EDITOR_SESSION_ID="$(open-in-editor-bridge --session-id)"
+open-in-editor-bridge --session-id
 open-in-editor-bridge --ensure-running
-docker compose up -d
-
-# Later, with the same port, bind address, runtime directory, and project root:
-docker compose down
+# Later, with the same configuration:
 open-in-editor-bridge --shutdown
 ```
 
-`--serve` runs the broker in the foreground and registers the current checkout. It requires a free port. Prefer the managed lifecycle above for sharing: manually interrupting a foreground broker stops all its sessions.
+The CLI is the low-level lifecycle interface, not a substitute for the Docker/Vite adapter. `--serve` runs a foreground broker and registers the current checkout; it requires a free port. Manually interrupting it stops all sessions. Prefer the managed API for sharing.
 
-## Docker and Checkout Routing
+`GET /health` reports PID, protocol, bind address, and active checkout IDs. `GET /__open-in-editor?file=<encoded-target>&session=<checkout-id>` spawns that checkout's editor with `--goto <translated-target>`, preserving optional `:line:column`. Paths equal to or below `/usr/src/web` map to the host `web` directory; other paths pass through unchanged. Query encoding is decoded exactly once, preserving literal percent sequences in filenames.
 
-All worktrees using one listener must agree on port, bind address, and runtime directory. Each checkout registers its own host-root mapping and editor command. Simultaneous startup is serialized by a shared per-port lock, not by checkout-local pidfiles.
-
-On Linux, make the host accessible from Compose and pass the checkout ID into the web service:
-
-```yaml
-services:
-  web:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      OPEN_IN_EDITOR_SESSION_ID: "${OPEN_IN_EDITOR_SESSION_ID:?Set the host checkout session ID}"
-```
-
-The container's dev-server proxy must forward editor requests to `http://host.docker.internal:3333` and add its `OPEN_IN_EDITOR_SESSION_ID` as the `session` query parameter. For example:
-
-```text
-GET /__open-in-editor?session=<checkout-id>&file=%2Fusr%2Fsrc%2Fweb%2Fapp.rb%3A12%3A4
-```
-
-`GET /health` reports the broker PID, protocol, bind address, and active checkout IDs. `GET /__open-in-editor` spawns the registered editor with `--goto <translated-target>`, preserving optional `:line:column`. Container paths equal to or below `/usr/src/web` map to that checkout's host `web` directory. Other paths pass through unchanged. Query encoding is decoded exactly once, preserving literal percent sequences in filenames.
-
-With exactly one checkout, existing links without `session` still work. With multiple checkouts, missing `session` returns HTTP 400 rather than guessing a checkout; unknown IDs return HTTP 404. Registering the same checkout with different roots or editor configuration while it is active is rejected; stop its existing leases before changing configuration.
+Custom integrations may use the same session protocol. With exactly one checkout, links without `session` work. With multiple checkouts, missing identity returns HTTP 400 rather than guessing; unknown IDs return HTTP 404. Conflicting roots/editor settings for an active checkout are rejected. Foreground and detached leases are independent; the last released lease shuts down the listener.
 
 ## Configuration
 
@@ -125,6 +134,8 @@ Version 0.2 replaces checkout-local PID/log files with shared runtime state. Sto
 Commit the root `Gemfile.lock` to keep development and release-test dependencies reproducible. Regenerate it with Bundler after changing `Gemfile`, and commit both files together when both change. This development lockfile is not included in the gem package and does not constrain applications installing this gem; those applications resolve the gemspec's dependencies using their own lockfiles.
 
 Keep generated `*.gem` packages, `.ruby-lsp/` editor state, and local `pkg/` / `tmp/` artifacts out of version control.
+
+Development checks require Node.js 18+ for the bundled Vite plugin's dependency-free tests; the Ruby library itself remains dependency-free. `rake test` runs both Ruby and Node checks.
 
 ```sh
 bundle install
