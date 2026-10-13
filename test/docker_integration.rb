@@ -186,6 +186,7 @@ class DockerIntegrationTest < Minitest::Test
     second = create_project("#{version}-checkout-b", version, image: image)
     [first, second].each { |project| compose(project, "up", "-d") }
 
+    assert_equal "0.0.0.0", JSON.parse(http_get(PORT, "/health").body).fetch("bind_address")
     [first, second].each { |project| assert_container_has_read_only_integration_mounts(project) }
     first_port = published_port(first)
     second_port = published_port(second)
@@ -366,7 +367,6 @@ class DockerIntegrationTest < Minitest::Test
 
   def environment_for(project)
     @compose_environment.merge(
-      "OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "0.0.0.0",
       "OPEN_IN_EDITOR_BRIDGE_RUNTIME_DIR" => @runtime_directory,
       "OPEN_IN_EDITOR_BRIDGE_PORT" => PORT.to_s,
       "OPEN_IN_EDITOR_COMMAND" => "#{Shellwords.escape(@editor_recorder)} #{Shellwords.escape(project.fetch(:record_path))}",
