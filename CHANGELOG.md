@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-10-13
+
+### Changed
+
+- The Docker Compose adapter defaults to `0.0.0.0` when no bind address is supplied, for both startup and teardown. Consumer wrappers no longer need the adapter's bind assignment.
+- Explicit caller settings are preserved; Docker startup still rejects explicit loopback addresses. Selecting the default never mutates the caller's environment or process-global `ENV`.
+- The retained Docker/Vite gate now exercises real editor invocation, concurrent checkout routing, and final cleanup with no bind override.
+
+### Security and Compatibility
+
+- Selecting the Docker adapter now exposes the editor listener on all IPv4 interfaces by default. Use only on a trusted/firewalled development network, or explicitly choose a narrower Docker-reachable interface.
+- Standalone CLI and low-level Ruby APIs retain the `127.0.0.1` default. Authentication, host-only control credentials, and lease behavior are unchanged.
+- Clients sharing a broker must use the same bind address. An existing loopback broker is never widened; low-level CLI cleanup of a Docker registration requires its matching bind configuration.
+- This is an intentional development-minor policy change, not an API freeze. Prefer `~> 0.5.0` for the tested release line.
+
 ## 0.4.0 — 2026-10-10
 
 ### Added
