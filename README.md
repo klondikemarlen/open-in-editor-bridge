@@ -5,7 +5,7 @@ A Ruby gem that runs a shared local HTTP bridge for opening container files in t
 ## Install
 
 ```ruby
-gem "open-in-editor-bridge", "~> 0.4.0"
+gem "open-in-editor-bridge", "~> 0.5.0"
 ```
 
 ```sh
@@ -16,13 +16,13 @@ gem install open-in-editor-bridge
 
 Use the host-side Compose adapter and the gem's mounted Vite plugin. The library owns checkout identity transport, the host-gateway entry, and the editor proxy; **do not export a session variable or write a request rewrite**.
 
+**Selecting the Docker adapter defaults the listener to `0.0.0.0` (all IPv4 interfaces), not just Docker. Use it only on a trusted development network with host firewall restrictions.** Set `OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS` to a narrower Docker-reachable host interface if needed. Explicit settings are preserved; explicit loopback startup is rejected. Standalone CLI and low-level Ruby use still default to `127.0.0.1`.
+
 Replace the development Compose startup/shutdown call:
 
 ```ruby
 require "open_in_editor_bridge"
 
-# Explicit network-exposure opt-in; use only on a trusted development network.
-ENV["OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS"] = "0.0.0.0"
 ENV["OPEN_IN_EDITOR_COMMAND"] = "code"
 
 OpenInEditorBridge.compose("up", service: "web")
@@ -54,7 +54,7 @@ Keep your application's existing plugins and other Vite settings. The variable-b
 - Select the Vite service (`service: "web"` by default); retain its image, command, source mounts, ports, and normal environment.
 - Select Compose files/project options when necessary, for example `compose_options: ["-f", "docker-compose.development.yaml", "-p", "my-checkout"]`. Pass subcommand options after `"up"` / `"down"`, not in `compose_options`.
 - Select checkout/container/host roots and the editor through the existing bridge configuration below. `project_root:` defaults to the current checkout; `env:` supplies bridge configuration and child-process environment overrides.
-- Explicitly select a Docker-reachable bind address. The adapter rejects loopback startup and never changes the default binding itself.
+- Optionally select a narrower Docker-reachable bind address. Without an override, the adapter uses `0.0.0.0` for both startup and teardown without mutating `ENV` or the supplied environment.
 
 Compose itself resolves the original project configuration before the adapter adds its mounts: default file discovery, `.env` / `--env-file`, `COMPOSE_FILE` / `COMPOSE_PATH_SEPARATOR`, explicit multi-file inputs, project name, source-relative paths, interpolation, and active profiles remain Compose-owned. The adapter reuses Compose's canonical JSON model in a private host-only temporary file, preserving Compose's literal-dollar escaping instead of merging the original sources a second time. `compose_options` retains other global options, and the original subcommand arguments still select services. Compose runs in `project_root:` and inherits normal process input/output. Failures raise; successful commands return `true`.
 
@@ -66,9 +66,9 @@ All checkouts share the standard host port `3333`, bind address, and private run
 
 ### Adopting in ELCC
 
-After installing 0.4.0, ELCC can replace the editor lifecycle/Compose `up` and `down` path in `bin/dev` with `OpenInEditorBridge.compose`, passing its existing development/gateway `-f` options, project name, host user/group variables, and gateway hostname. Keep gateway lifecycle ownership and pipe-input handling for unrelated commands unchanged.
+After installing 0.5.0, ELCC can replace the editor lifecycle/Compose `up` and `down` path in `bin/dev` with `OpenInEditorBridge.compose`, passing its existing development/gateway `-f` options, project name, host user/group variables, and gateway hostname. Keep gateway lifecycle ownership and pipe-input handling for unrelated commands unchanged.
 
-Remove the `OPEN_IN_EDITOR_SESSION_ID` export from `dynamic_environment_variables`, its web-service pass-through in `docker-compose.development.yaml`, and the handwritten `/__open-in-editor` target/rewrite in `web/vite.config.js`. Add the mounted plugin to the existing Vue/Vuetify/gateway plugin list under the development-only condition above. The adapter supplies the host-gateway entry, so an editor-only `extra_hosts` entry is no longer necessary. Keep the explicit trusted-network bind opt-in and existing root/editor settings. No consumer files are changed automatically.
+Remove the `OPEN_IN_EDITOR_SESSION_ID` export from `dynamic_environment_variables`, its web-service pass-through in `docker-compose.development.yaml`, and the handwritten `/__open-in-editor` target/rewrite in `web/vite.config.js`. Add the mounted plugin to the existing Vue/Vuetify/gateway plugin list under the development-only condition above. The adapter supplies the host-gateway entry, so an editor-only `extra_hosts` entry is no longer necessary. The wrapper's `0.0.0.0` bind assignment is also unnecessary; keep any intentionally narrower interface and existing root/editor settings. No consumer files are changed automatically.
 
 ## Low-Level Ruby API
 
@@ -109,7 +109,7 @@ Custom integrations may use the same session protocol. With exactly one checkout
 | Variable | Default | Purpose |
 |---|---|---|
 | `OPEN_IN_EDITOR_BRIDGE_PORT` | `3333` | Shared host listener port |
-| `OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS` | `127.0.0.1` | Listener address; `0.0.0.0` allows Docker IPv4 access |
+| `OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS` | Compose: `0.0.0.0`; standalone: `127.0.0.1` | Listener address; Docker's default exposes all IPv4 interfaces |
 | `OPEN_IN_EDITOR_PROJECT_ROOT` | Current directory | Checkout identity and default host mapping |
 | `OPEN_IN_EDITOR_CONTAINER_WEB_ROOT` | `/usr/src/web` | Container directory to translate |
 | `OPEN_IN_EDITOR_HOST_WEB_ROOT` | `<project-root>/web` | Corresponding host directory |
@@ -121,9 +121,11 @@ The editor command is required when registering a checkout, but not for `--sessi
 
 ## Security and Upgrade Notes
 
-Loopback binding is the default. `0.0.0.0` also exposes the listener to other reachable network peers, not only Docker. Use it only on a trusted development network with host firewall restrictions; a specific Docker-reachable host interface can narrow exposure. Editor requests are intentionally unauthenticated and health exposes checkout IDs: anyone who can reach the listener can invoke configured editors. Do not expose it on an untrusted network or forward it publicly.
+Standalone CLI and low-level Ruby entrypoints default to loopback. **The Docker Compose adapter defaults to `0.0.0.0`, exposing the listener to other reachable network peers, not only Docker.** Use it only on a trusted development network with host firewall restrictions; an explicit Docker-reachable host interface can narrow exposure. Editor requests are intentionally unauthenticated and health exposes checkout IDs: anyone who can reach the listener can invoke configured editors. Do not expose it on an untrusted network or forward it publicly.
 
 Registration and release use nonce-bound HMAC signatures derived from a random control token held in the private host runtime directory; the token is never sent over HTTP. Clients authenticate health and control responses and verify broker protocol/PID against shared state. The broker rejects replayed control requests. Shutdown uses authenticated HTTP control, never signals a PID read from disk. Unknown listeners, old bridge versions, mismatched PIDs, and mismatched bind configurations are not reused.
+
+All clients sharing a port/runtime directory must agree on the bind address. The Docker adapter never widens an existing loopback broker; release its sessions with their original configuration before switching. Prefer Compose `down` to release Docker registrations. If using the low-level CLI for Docker cleanup, explicitly supply the adapter's bind address (for example `OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS=0.0.0.0 open-in-editor-bridge --shutdown`), since standalone defaults remain loopback.
 
 A failed or timed-out health probe does not discard a still-listening broker's credentials. Lifecycle operations fail explicitly until its identity can be verified; retry after the listener becomes responsive.
 
@@ -135,7 +137,7 @@ Supported entrypoints are the documented Ruby class methods `compose`, `with_run
 
 `Configuration`, `Client`, `Server`, `Docker`, raw lease methods, control-request signing, runtime file layout, generated Compose inputs, and proxy implementation details are internal, even where Ruby permits direct access. Do not build a consumer on those details or put control credentials in containers. HTTP error text, status-log wording, checkout-ID derivation details, and temporary filenames are not compatibility interfaces.
 
-This project follows [Semantic Versioning](https://semver.org/). **0.4.0 remains a development release, not a claim that the integration is frozen.** Use `~> 0.4.0` to stay within the tested minor release line; `~> 0.4` would permit future 0.x minor changes.
+This project follows [Semantic Versioning](https://semver.org/). **0.5.0 remains a development release, not a claim that the integration is frozen.** Use `~> 0.5.0` to stay within the tested minor release line; `~> 0.5` would permit future 0.x minor changes. The Docker-only bind-default policy change is a minor release; standalone defaults and broker protocol are unchanged.
 
 **1.0 is a public-API compatibility commitment, not a feature-count milestone.** The Ruby lifecycle is already used by consumers, but the Compose/Vite path is recent and this cycle found configuration-selection and readiness-lifetime defects. Promotion should follow an explicit freeze of the supported API, platform/tool prerequisites, and upgrade policy after real consumer adoption confirms the integration shape and the retained installed-artifact gate passes. No additional feature backlog or arbitrary sequence through 0.5–0.9 is required; the next stable-contract release can go directly to 1.0.
 
@@ -163,18 +165,18 @@ Release changes on an issue-linked branch and pull request, including the versio
 bundle exec rake test:docker
 ```
 
-The opt-in gate creates isolated temporary Compose projects and requires host port 3333 to be free. It exercises two checkout mappings for each pinned Vite version, encoded paths/locations and hostile selectors, credential isolation, native configuration parity, readiness-based detached lifetime, foreground/error cleanup, ordinary commands, and production builds without editor mounts. It does not run as part of the fast `rake test` gate. Docker and npm registry access are required to prepare the Node/Vite fixture images; projects, leases, networks, and temporary directories are cleaned on exit. Images may be reused between QA runs.
+The opt-in gate creates isolated temporary Compose projects and requires host port 3333 to be free. It exercises two checkout mappings for each pinned Vite version with no bind override, observes the Docker default, and records real editor invocations. It also covers encoded paths/locations and hostile selectors, credential isolation, native configuration parity, readiness-based detached lifetime, foreground/error cleanup, ordinary commands, and production builds without editor mounts. It does not run as part of the fast `rake test` gate. Docker and npm registry access are required to prepare the Node/Vite fixture images; projects, leases, networks, and temporary directories are cleaned on exit. Images may be reused between QA runs.
 
 To repeat it against the released gem while retaining the checkout's test tooling:
 
 ```sh
 release_home="$(mktemp -d)"
 GEM_HOME="$release_home" GEM_PATH="$release_home" \
-  gem install open-in-editor-bridge --version 0.4.0 \
+  gem install open-in-editor-bridge --version 0.5.0 \
     --clear-sources --source https://rubygems.org --no-document
 GEM_HOME="$release_home" GEM_PATH="$release_home" \
   ruby -ropen_in_editor_bridge -e 'puts OpenInEditorBridge::VERSION'
-OPEN_IN_EDITOR_BRIDGE_TEST_LIB="$release_home/gems/open-in-editor-bridge-0.4.0/lib" \
+OPEN_IN_EDITOR_BRIDGE_TEST_LIB="$release_home/gems/open-in-editor-bridge-0.5.0/lib" \
   bundle exec rake test:docker
 rm -rf "$release_home"
 ```

@@ -24,6 +24,7 @@ class OpenInEditorBridgeTest < Minitest::Test
       "OPEN_IN_EDITOR_COMMAND" => "#{RbConfig.ruby} -e 'exit' --",
     }
     @previous_environment = @env.keys.to_h { |key| [key, ENV[key]] }
+    @previous_environment["OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS"] = ENV.delete("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS")
     @env.each { |key, value| ENV[key] = value }
     @bridges = []
   end
@@ -333,6 +334,82 @@ class OpenInEditorBridgeTest < Minitest::Test
     assert_equal [bridge.session_id, second.session_id].sort, health.fetch("sessions").sort
   end
 
+  def test_low_level_startup_defaults_to_loopback
+    bridge.call("--ensure-running")
+
+    assert_equal "127.0.0.1", health.fetch("bind_address")
+  end
+
+  def test_with_running_defaults_to_loopback
+    OpenInEditorBridge.with_running do
+      assert_equal "127.0.0.1", health.fetch("bind_address")
+    end
+  end
+
+  def test_cli_startup_defaults_to_loopback
+    build_bridge(@env)
+    output, error, status = Open3.capture3(@env, RbConfig.ruby,
+      File.expand_path("../exe/open-in-editor-bridge", __dir__), "--ensure-running")
+
+    assert status.success?, "#{output}\n#{error}"
+    assert_equal "127.0.0.1", health.fetch("bind_address")
+  end
+
+  def test_compose_default_does_not_widen_an_existing_loopback_broker
+    compose_fixture(exit_status: 0)
+    bridge.call("--ensure-running")
+    env = docker_env.reject { |key, _value| key == "OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" }
+
+    assert_raises(OpenInEditorBridge::StartupError) do
+      OpenInEditorBridge.compose("up", "-d", env: env)
+    end
+
+    assert_equal "127.0.0.1", health.fetch("bind_address")
+    assert_equal [bridge.session_id], health.fetch("sessions")
+  end
+
+  def test_compose_without_bind_override_accepts_a_frozen_environment_and_down_stops_the_broker
+    compose_fixture(exit_status: 0)
+    env = docker_env.reject { |key, _value| key == "OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" }.freeze
+    build_bridge(docker_env)
+
+    OpenInEditorBridge.compose("up", "-d", env: env)
+
+    assert_equal "0.0.0.0", health.fetch("bind_address")
+    OpenInEditorBridge.compose("down", env: env)
+    refute port_open?
+  end
+
+  def test_compose_without_environment_argument_does_not_mutate_global_environment
+    compose_fixture(exit_status: 0)
+    build_bridge(docker_env)
+    previous_path = ENV.fetch("PATH")
+    ENV["PATH"] = docker_env.fetch("PATH")
+
+    OpenInEditorBridge.compose("up", "-d")
+
+    refute ENV.key?("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS")
+    OpenInEditorBridge.compose("down")
+    refute port_open?
+  ensure
+    ENV["PATH"] = previous_path if previous_path
+  end
+
+  def test_compose_preserves_an_explicit_host_interface
+    compose_fixture(exit_status: 0)
+    interface = Socket.ip_address_list.find { |address| address.ipv4? && !address.ipv4_loopback? }
+    skip "a non-loopback IPv4 interface is required" unless interface
+    env = docker_env.merge("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => interface.ip_address)
+    build_bridge(env)
+
+    OpenInEditorBridge.compose("up", "-d", env: env)
+
+    response = Net::HTTP.start(interface.ip_address, @port, nil) { |http| http.get("/health") }
+    assert_equal interface.ip_address, JSON.parse(response.body).fetch("bind_address")
+    OpenInEditorBridge.compose("down", env: env)
+    assert_raises(Errno::ECONNREFUSED) { TCPSocket.new(interface.ip_address, @port).close }
+  end
+
   def test_compose_foreground_releases_its_lease_after_success_and_failure
     compose_fixture(exit_status: 0)
     assert OpenInEditorBridge.compose("up", env: docker_env)
@@ -409,14 +486,16 @@ class OpenInEditorBridgeTest < Minitest::Test
     refute port_open?
   end
 
-  def test_compose_requires_docker_network_opt_in_before_registering
+  def test_compose_rejects_explicit_loopback_addresses_before_registering
     compose_fixture(exit_status: 0)
-    env = docker_env.merge("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => "127.0.0.1")
 
-    assert_raises(ArgumentError) { OpenInEditorBridge.compose("up", "-d", env: env) }
+    %w[127.0.0.1 ::1 localhost].each do |address|
+      env = docker_env.merge("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS" => address)
 
-    refute File.exist?(@runtime_directory)
-    refute port_open?
+      assert_raises(ArgumentError) { OpenInEditorBridge.compose("up", "-d", env: env) }
+      refute File.exist?(@runtime_directory)
+      refute port_open?
+    end
   end
 
   private

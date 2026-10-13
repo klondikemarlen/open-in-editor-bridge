@@ -8,7 +8,8 @@ class OpenInEditorBridge
     CONTAINER_DIRECTORY = "/open-in-editor-bridge"
 
     def initialize(env:, project_root:, service:, compose_options:)
-      @env = env.to_h
+      @env = env.to_h.dup
+      @env["OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS"] = @env.fetch("OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS", "0.0.0.0")
       @project_root = File.expand_path(project_root || @env.fetch("OPEN_IN_EDITOR_PROJECT_ROOT", Dir.pwd))
       @service = service
       @compose_options = compose_options
@@ -34,7 +35,7 @@ class OpenInEditorBridge
 
     def up(args)
       if %w[127.0.0.1 ::1 localhost].include?(configuration.bind_address)
-        raise ArgumentError, "Docker editor access requires explicit OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS (for example 0.0.0.0 on a trusted network)."
+        raise ArgumentError, "Docker editor access requires a Docker-reachable OPEN_IN_EDITOR_BRIDGE_BIND_ADDRESS (for example 0.0.0.0 on a trusted network); loopback is not reachable from containers."
       end
       raise ArgumentError, "Select a Compose service for the Vite integration" if @service.to_s.empty?
 
